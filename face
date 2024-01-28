@@ -1,0 +1,145 @@
+import cv2
+import face_recognition
+import pandas as pd
+from datetime import datetime
+import os
+import gspread
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# File path of the known face image
+known_face_path = '/Users/sananthkumar/PycharmProjects/pythonProject2/sanupiccopy.jpg'
+
+# Google Drive folder ID to store known faces
+google_drive_folder_id = '1Y4yN7si2npbV3VcKMaCLyDTB5-Fm0cva'
+
+# Load known faces
+known_faces = []
+known_names = []
+
+
+# Function to upload known face to Google Drive
+def upload_known_face_to_drive(file_path, folder_id):
+    credentials = service_account.Credentials.from_service_account_file('long-canto-412604-8edca1e6c9b9.json',
+                                                                        scopes=[
+                                                                            'https://www.googleapis.com/auth/drive'])
+
+    service = build('drive', 'v3', credentials=credentials)
+
+    media = MediaFileUpload(file_path, mimetype='image/jpeg', resumable=True)
+
+    file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
+
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+
+    print(f"Known face uploaded to Google Drive. File ID: {file.get('id')}")
+
+
+# Function to fetch known faces from Google Drive
+def fetch_known_faces_from_drive(folder_id):
+    credentials = service_account.Credentials.from_service_account_file('long-canto-412604-8edca1e6c9b9.json',
+                                                                        scopes=[
+                                                                            'https://www.googleapis.com/auth/drive'])
+
+    service = build('drive', 'v3', credentials=credentials)
+
+    query = f"'{folder_id}' in parents"
+
+    results = service.files().list(q=query).execute().get('files', [])
+
+    for result in results:
+        file_id = result['id']
+        file_name = result['name']
+        download_url = f"https://drive.google.com/uc?id={file_id}"
+
+        # Download the known face image
+        response = service.files().get_media(fileId=file_id)
+        known_face_image_content = response.execute()
+
+        # Save the known face image locally
+        local_file_path = f"known_faces/{file_name}"
+        with open(local_file_path, 'wb') as f:
+            f.write(known_face_image_content)
+
+        # Load the known face image and encoding
+        known_image = face_recognition.load_image_file(local_file_path)
+        known_encoding = face_recognition.face_encodings(known_image)[0]
+
+        known_faces.append(known_encoding)
+        known_names.append(file_name.split('.')[0])
+
+    print("Known faces fetched from Google Drive.")
+
+
+# Function to capture image
+def capture_image():
+    cam = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            print("Failed to grab frame")
+            break
+        cv2.imshow('Press Space to capture', frame)
+        if cv2.waitKey(1) & 0xFF == ord(' '):
+            break
+    cam.release()
+    cv2.destroyAllWindows()
+    return frame if ret else None
+
+
+# Function to recognize face
+def recognize_face(captured_image):
+    face_encodings = face_recognition.face_encodings(captured_image)
+    if len(face_encodings) == 0:
+        print("No faces detected in the image.")
+        return None
+    captured_encoding = face_encodings[0]
+    matches = face_recognition.compare_faces(known_faces, captured_encoding)
+    if True in matches:
+        first_match_index = matches.index(True)
+        return known_names[first_match_index]
+    return None
+
+
+# Function to mark attendance in Google Sheets
+def mark_attendance_to_google_sheets(student_name, spreadsheet_key='18haKp9P2spGhJrWUsmukKQOHjGbLFwPrro_Pptw8m4c'):
+    now = datetime.now()
+    current_date = now.strftime("%Y-%m-%d")
+    current_time = now.strftime("%H:%M:%S")
+
+    credentials = service_account.Credentials.from_service_account_file('long-canto-412604-8edca1e6c9b9.json',
+                                                                        scopes=[
+                                                                            'https://www.googleapis.com/auth/spreadsheets'])
+
+    gc = gspread.Client(auth=credentials)
+    gc.login()
+
+    sh = gc.open_by_key(spreadsheet_key)
+    worksheet = sh.get_worksheet(0)
+
+    new_record = [student_name, current_date, current_time]
+    worksheet.append_row(new_record)
+
+
+# Main execution
+def main():
+    # Upload known face to Google Drive
+    upload_known_face_to_drive(known_face_path, google_drive_folder_id)
+
+    # Fetch known faces from Google Drive
+    fetch_known_faces_from_drive(google_drive_folder_id)
+
+    image = capture_image()
+    if image is None:
+        return
+    student_name = recognize_face(image)
+    if student_name is None:
+        print("Student not recognized!")
+        return
+    mark_attendance_to_google_sheets(student_name)
+    print(f"Attendance marked for {student_name}")
+
+
+if __name__ == "__main__":
+    main()
